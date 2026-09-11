@@ -54,10 +54,10 @@ func encryptRecord(master []byte, aad any, payload any) ([]byte, error) {
 		return nil, fmtError(ErrKeyUnavailable, 500, "compact nonce unavailable")
 	}
 	sealed := gcm.Seal(nil, nonce, plain, aadBytes)
-	out := make([]byte, 4+len(nonce)+len(sealed))
-	binary.BigEndian.PutUint32(out[:4], uint32(len(nonce)))
-	copy(out[4:], nonce)
-	copy(out[4+len(nonce):], sealed)
+	out := make([]byte, 4, 4+len(nonce)+len(sealed))
+	binary.BigEndian.PutUint32(out, uint32(len(nonce)))
+	out = append(out, nonce...)
+	out = append(out, sealed...)
 	return out, nil
 }
 

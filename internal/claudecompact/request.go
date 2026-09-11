@@ -75,9 +75,10 @@ func removePromptBlock(raw []byte, match PromptMatch) ([]byte, error) {
 		if match.ContentIndex < 0 || match.ContentIndex >= len(typed) {
 			return nil, fmtError(ErrProtocolError, 400, "compact content index is invalid")
 		}
-		copy(typed[match.ContentIndex:], typed[match.ContentIndex+1:])
-		typed = typed[:len(typed)-1]
-		message["content"] = typed
+		filtered := make([]any, 0, len(typed)-1)
+		filtered = append(filtered, typed[:match.ContentIndex]...)
+		filtered = append(filtered, typed[match.ContentIndex+1:]...)
+		message["content"] = filtered
 		if len(typed) == 0 {
 			messages = append(messages[:match.MessageIndex], messages[match.MessageIndex+1:]...)
 		}
