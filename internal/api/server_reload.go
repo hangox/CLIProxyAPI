@@ -179,6 +179,11 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 
 	s.handlers.UpdateClients(effectiveSDKConfig(cfg))
+	if s.claudeCodeHandler != nil {
+		if errCompactSync := s.claudeCodeHandler.SyncCompactRuntime(); errCompactSync != nil {
+			log.WithError(errCompactSync).Error("failed to synchronize Claude compact runtime")
+		}
+	}
 	s.handlers.SetPluginHost(s.pluginHost)
 	if s.pluginHost != nil {
 		s.pluginHost.SetModelExecutor(s.handlers)

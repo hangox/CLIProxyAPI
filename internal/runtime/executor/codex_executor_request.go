@@ -276,6 +276,17 @@ func codexIdentityConfuseUUID(authID string, kind string, value string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
 }
 
+func applyCodexOptionHeaders(dst http.Header, source http.Header) {
+	if dst == nil || source == nil {
+		return
+	}
+	for _, key := range []string{"X-Codex-Beta-Features", "Version", "X-Codex-Turn-Metadata", "X-Client-Request-Id", "Originator", "Session_id"} {
+		if value := strings.TrimSpace(source.Get(key)); value != "" {
+			dst.Set(key, value)
+		}
+	}
+}
+
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config) {
 	var ginHeaders http.Header
 	if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {

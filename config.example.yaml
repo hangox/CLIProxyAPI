@@ -175,6 +175,16 @@ disable-claude-cloak-mode: false
 claude-code:
   # When true, return original model IDs in Anthropic model list responses instead of cloaked IDs.
   disable-cloaking-model-list: false
+  # Opaque compact is disabled by default. Stable paths are required before enabling it.
+  compact:
+    enabled: false
+    protocol: v2
+    store-path: ""
+    keyring-file: ""
+    ttl: 168h
+    capacity: 4096
+    max-bytes: 268435456
+    token-budget-overrides: {}
 
 # disable-image-generation supports: false (default), true, "chat", or "passthrough".
 # - true: disable image_generation everywhere (also returns 404 for /v1/images/generations and /v1/images/edits).

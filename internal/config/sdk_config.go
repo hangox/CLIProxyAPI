@@ -4,6 +4,8 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import "time"
+
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
@@ -67,6 +69,22 @@ type SDKConfig struct {
 type ClaudeCodeConfig struct {
 	// DisableCloakingModelList disables model ID cloaking in Anthropic model list responses.
 	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
+
+	// Compact configures the opaque Claude Code compaction bridge. It is disabled by default.
+	Compact ClaudeCompactConfig `yaml:"compact" json:"compact"`
+}
+
+// ClaudeCompactConfig configures the local authenticated state used by Claude Code compaction.
+// StorePath and KeyringFile must be explicit stable paths when Enabled is true.
+type ClaudeCompactConfig struct {
+	Enabled              bool           `yaml:"enabled" json:"enabled"`
+	Protocol             string         `yaml:"protocol" json:"protocol"`
+	StorePath            string         `yaml:"store-path" json:"store-path"`
+	KeyringFile          string         `yaml:"keyring-file" json:"keyring-file"`
+	TTL                  time.Duration  `yaml:"ttl" json:"ttl"`
+	Capacity             int            `yaml:"capacity" json:"capacity"`
+	MaxBytes             int64          `yaml:"max-bytes" json:"max-bytes"`
+	TokenBudgetOverrides map[string]int `yaml:"token-budget-overrides" json:"token-budget-overrides"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

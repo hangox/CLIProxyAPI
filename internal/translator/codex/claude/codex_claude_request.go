@@ -233,6 +233,17 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 						}
 						functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "arguments", messageContentResult.Get("input").Raw)
 						inputItems = append(inputItems, functionCallMessage)
+					case "compaction":
+						// Compact bridge restoration carries a Codex compaction item through
+						// Claude content without changing normal Claude request semantics.
+						flushMessage()
+						compactionItem := messageContentResult.Get("data")
+						if !compactionItem.Exists() {
+							compactionItem = messageContentResult
+						}
+						if compactionItem.Type == gjson.JSON {
+							inputItems = append(inputItems, []byte(compactionItem.Raw))
+						}
 					case "tool_result":
 						flushMessage()
 						functionCallOutputMessage := []byte(`{"type":"function_call_output"}`)

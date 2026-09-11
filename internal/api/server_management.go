@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -28,6 +29,27 @@ func (s *Server) registerManagementRoutes() {
 	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
 	{
 		mgmt.GET("/config", s.mgmt.GetConfig)
+		mgmt.GET("/claude-compact/status", func(c *gin.Context) {
+			if s.claudeCodeHandler == nil {
+				c.JSON(http.StatusOK, gin.H{"enabled": false, "ready": false, "reason": "unavailable"})
+				return
+			}
+			c.JSON(http.StatusOK, s.claudeCodeHandler.CompactStatus())
+		})
+		mgmt.GET("/claude-compact/events", func(c *gin.Context) {
+			limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+			offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+			if limit < 1 {
+				limit = 1
+			}
+			if limit > 100 {
+				limit = 100
+			}
+			if offset < 0 {
+				offset = 0
+			}
+			c.JSON(http.StatusOK, s.CompactEvents(limit, offset))
+		})
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)

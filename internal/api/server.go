@@ -50,7 +50,13 @@ type Server struct {
 	muxHTTPListener *muxListener
 
 	// handlers contains the API handlers for processing requests.
-	handlers         *handlers.BaseAPIHandler
+	handlers          *handlers.BaseAPIHandler
+	claudeCodeHandler interface {
+		CloseCompactRuntime() error
+		SyncCompactRuntime() error
+		CompactStatus() map[string]any
+		CompactEvents(limit, offset int) map[string]any
+	}
 	codexLiveHandler *codexlive.Handler
 
 	// cfg holds the current server configuration.
@@ -389,6 +395,11 @@ func (s *Server) Stop(ctx context.Context) error {
 	errShutdown := s.server.Shutdown(ctx)
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
+	}
+	if s.claudeCodeHandler != nil {
+		if errCloseCompact := s.claudeCodeHandler.CloseCompactRuntime(); errCloseCompact != nil {
+			log.Debugf("failed to close Claude compact runtime: %v", errCloseCompact)
+		}
 	}
 	if errShutdown != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", errShutdown)

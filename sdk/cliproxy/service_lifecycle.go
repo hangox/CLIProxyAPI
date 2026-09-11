@@ -117,6 +117,11 @@ func (s *Service) Run(ctx context.Context) error {
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	if s.server != nil {
+		if errCompactSync := s.server.SyncCompactRuntime(); errCompactSync != nil {
+			return fmt.Errorf("cliproxy: failed to initialize Claude compact runtime: %w", errCompactSync)
+		}
+	}
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.syncPluginModelRuntime(ctx)
@@ -317,6 +322,12 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		// no legacy clients to persist
 
 		if s.server != nil {
+			if errCompactClose := s.server.CloseCompactRuntime(); errCompactClose != nil {
+				log.Errorf("error stopping Claude compact runtime: %v", errCompactClose)
+				if shutdownErr == nil {
+					shutdownErr = errCompactClose
+				}
+			}
 			shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			if err := s.server.Stop(shutdownCtx); err != nil {
@@ -324,6 +335,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				if shutdownErr == nil {
 					shutdownErr = err
 				}
+			}
+			// Stop closes the runtime as well; repeat the idempotent close after
+			// HTTP shutdown to cover concurrent Run/Shutdown ownership paths.
+			if errCompactClose := s.server.CloseCompactRuntime(); errCompactClose != nil && shutdownErr == nil {
+				shutdownErr = errCompactClose
 			}
 		}
 

@@ -43,9 +43,7 @@ type ClaudeCodeAPIHandler struct {
 // Returns:
 //   - *ClaudeCodeAPIHandler: A new Claude code API handler instance.
 func NewClaudeCodeAPIHandler(apiHandlers *handlers.BaseAPIHandler) *ClaudeCodeAPIHandler {
-	return &ClaudeCodeAPIHandler{
-		BaseAPIHandler: apiHandlers,
-	}
+	return &ClaudeCodeAPIHandler{BaseAPIHandler: apiHandlers}
 }
 
 // HandlerType returns the identifier for this handler implementation.
@@ -82,6 +80,14 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 
 	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
 	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
+
+	// Handle opaque Claude Code compaction before normal dispatch. A restored request
+	// continues through the existing auth, translation, retry, and streaming path.
+	if compactRaw, handled := h.handleClaudeCompact(c, rawJSON); handled {
+		return
+	} else {
+		rawJSON = compactRaw
+	}
 
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
