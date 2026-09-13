@@ -12,7 +12,7 @@ func TestClaudeCompactPageEscapesDynamicEventFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := string(body)
-	for _, want := range []string{"esc=v=>", "safe=", "safe(x.cause)", "safe(x.result)"} {
+	for _, want := range []string{"esc=v=>", "safe=", "safe(causeText[x.cause]||x.cause)", "safe(resultText[x.result]||x.result)"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("page missing XSS-safe dynamic rendering marker %q", want)
 		}
@@ -25,7 +25,7 @@ func TestClaudeCompactPageEscapesDynamicEventFields(t *testing.T) {
 			t.Fatalf("page persists or transmits management key unsafely: %q", forbidden)
 		}
 	}
-	if !strings.Contains(page, "X-Management-Key") || !strings.Contains(page, "Load more") {
+	if !strings.Contains(page, "X-Management-Key") || !strings.Contains(page, "加载更多") {
 		t.Fatal("page is missing explicit in-memory auth or pagination UI")
 	}
 }

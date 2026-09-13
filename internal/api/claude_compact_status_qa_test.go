@@ -70,7 +70,7 @@ func TestManagementClaudeCompactStatusIsAuthenticatedAggregateAndPrivate(t *test
 	pageReq.Header.Set("X-Management-Key", "qa-management-secret")
 	pageRecorder := httptest.NewRecorder()
 	server.engine.ServeHTTP(pageRecorder, pageReq)
-	if pageRecorder.Code != http.StatusOK || !strings.Contains(pageRecorder.Body.String(), "Claude Compact") {
+	if pageRecorder.Code != http.StatusOK || !strings.Contains(pageRecorder.Body.String(), "Claude 压缩观测") {
 		t.Fatalf("page response = %d, body=%s", pageRecorder.Code, pageRecorder.Body.String())
 	}
 }
