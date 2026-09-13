@@ -94,6 +94,84 @@ func TestMarkerRoundTripAndTamper(t *testing.T) {
 	}
 }
 
+func TestFindMarkerIgnoresLiteralPrefixInUnrelatedHistory(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "we were discussing the codex-opaque-state:v1: marker format earlier"},
+			map[string]any{"role": "user", "content": "what's the weather today?"},
+		},
+	})
+	found, hasMarker, err := FindMarker(body)
+	if err != nil {
+		t.Fatalf("unrelated mention of marker prefix must not fail the request: %v", err)
+	}
+	if hasMarker {
+		t.Fatalf("unrelated mention must not be treated as a marker: %+v", found)
+	}
+}
+
+func TestFindMarkerStillFindsRealMarkerAmongUnrelatedMentions(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	marker, err := NewMarker("0123456789abcdef0123456789abcdef", strings.Repeat("a", 64), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "earlier we discussed codex-opaque-state:v1: as a concept"},
+			map[string]any{"role": "assistant", "content": marker.String()},
+		},
+	})
+	found, hasMarker, err := FindMarker(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasMarker || found != marker {
+		t.Fatalf("expected to find real marker, got hasMarker=%v found=%+v", hasMarker, found)
+	}
+}
+
+func TestFindMarkerRejectsTwoValidMarkersInSameTextBlock(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	first, err := NewMarker("0123456789abcdef0123456789abcdef", strings.Repeat("a", 64), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewMarker("fedcba9876543210fedcba9876543210", strings.Repeat("b", 64), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"messages": []any{
+			map[string]any{"role": "assistant", "content": first.String() + "\n" + second.String()},
+		},
+	})
+	_, hasMarker, err := FindMarker(body)
+	if err == nil || hasMarker {
+		t.Fatalf("two valid markers in one text block must be rejected as ambiguous, got hasMarker=%v err=%v", hasMarker, err)
+	}
+}
+
+func TestFindMarkerFindsRealMarkerAlongsideGarbageMentionInSameBlock(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	marker, err := NewMarker("0123456789abcdef0123456789abcdef", strings.Repeat("a", 64), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"messages": []any{
+			map[string]any{"role": "assistant", "content": "as mentioned (codex-opaque-state:v1: is the prefix) here is the real one: " + marker.String()},
+		},
+	})
+	found, hasMarker, err := FindMarker(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasMarker || found != marker {
+		t.Fatalf("expected to find the one real marker despite a garbage mention in the same block, got hasMarker=%v found=%+v", hasMarker, found)
+	}
+}
+
 func TestStoreMissingDatabaseFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	cfg := StoreConfig{Enabled: true, StorePath: filepath.Join(dir, "compact.db"), Keyring: filepath.Join(dir, "keyring"), TTL: time.Hour, Capacity: 1, MaxBytes: 1 << 20}

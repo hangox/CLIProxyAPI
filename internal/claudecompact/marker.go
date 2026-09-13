@@ -61,6 +61,26 @@ func signMarker(m Marker, key []byte, bindings ...string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// markerTokenBytes/markerTokenLen are the single source of truth for the
+// token's fixed on-wire length; opaqueTokenBounds, validTokensIn and
+// parseTokenShape all derive from these instead of restating them.
+const (
+	markerTokenBytes = 16 + 32 + 32
+	markerTokenLen   = len(markerPrefix) + markerTokenBytes*2 + 2
+)
+
+// parseTokenShape validates that token (a markerTokenLen-byte slice starting
+// at the prefix) has the structural shape of a marker - three colon-separated
+// hex fields of the expected lengths - and decodes it. It does not verify the
+// signature; that happens later via Marker.VerifySignature during resolve.
+func parseTokenShape(token string) (Marker, bool) {
+	parts := strings.Split(strings.TrimPrefix(token, markerPrefix), ":")
+	if len(parts) != 3 || !validHex(parts[0], 16) || !validHex(parts[1], 32) || !validHex(parts[2], 32) {
+		return Marker{}, false
+	}
+	return Marker{StateID: parts[0], ContentHash: parts[1], Signature: parts[2]}, true
+}
+
 // ParseMarker parses the unique opaque token from an Anthropic wrapper without
 // treating surrounding summaries or transcript text as marker data.
 func ParseMarker(text string) (Marker, error) {
@@ -68,11 +88,11 @@ func ParseMarker(text string) (Marker, error) {
 	if err != nil {
 		return Marker{}, err
 	}
-	parts := strings.Split(strings.TrimPrefix(token, markerPrefix), ":")
-	if len(parts) != 3 || !validHex(parts[0], 16) || !validHex(parts[1], 32) || !validHex(parts[2], 32) {
+	marker, ok := parseTokenShape(token)
+	if !ok {
 		return Marker{}, fmtError(ErrInvalidMarker, 400, "invalid opaque marker")
 	}
-	return Marker{StateID: parts[0], ContentHash: parts[1], Signature: parts[2]}, nil
+	return marker, nil
 }
 
 func opaqueTokenBounds(text string) (int, int, string, error) {
@@ -84,15 +104,12 @@ func opaqueTokenBounds(text string) (int, int, string, error) {
 	if strings.Count(text, markerPrefix) != 1 {
 		return 0, 0, "", fmtError(ErrInvalidMarker, 400, "multiple opaque tokens")
 	}
-	const tokenBytes = 16 + 32 + 32
-	tokenLen := len(markerPrefix) + 32 + 1 + 64 + 1 + 64
-	end := first + tokenLen
+	end := first + markerTokenLen
 	if end > len(text) {
 		return 0, 0, "", fmtError(ErrInvalidMarker, 400, "opaque token is truncated")
 	}
 	token := text[first:end]
-	parts := strings.Split(strings.TrimPrefix(token, markerPrefix), ":")
-	if len(parts) != 3 || !validHex(parts[0], 16) || !validHex(parts[1], 32) || !validHex(parts[2], 32) || tokenLen != len(markerPrefix)+tokenBytes*2+2 {
+	if _, ok := parseTokenShape(token); !ok {
 		return 0, 0, "", fmtError(ErrInvalidMarker, 400, "opaque token shape is invalid")
 	}
 	return first, end, token, nil
@@ -211,18 +228,51 @@ func FindMarker(body []byte) (Marker, bool, error) {
 			if !strings.Contains(text, markerPrefix) {
 				continue
 			}
-			marker, errParse := ParseMarker(text)
-			if errParse != nil {
-				return Marker{}, false, errParse
+			// A message can mention the marker prefix literally (e.g. pasted code or
+			// discussion about this feature) without containing a token at all. Count
+			// only occurrences whose shape matches a real token (signature is not
+			// checked here - that happens later via Resolve); anything else is not a
+			// restore candidate and must not fail the whole request, or stale
+			// conversation history containing the prefix would permanently poison
+			// every future request in the session. A single text block holding two or
+			// more validly-shaped tokens is genuine ambiguity and is still rejected,
+			// matching this function's documented contract.
+			candidates := validTokensIn(text)
+			if len(candidates) > 1 {
+				return Marker{}, false, newError(ErrInvalidMarker, 400, "multiple opaque markers", nil)
 			}
-			found = marker
-			foundCount++
+			for _, marker := range candidates {
+				found = marker
+				foundCount++
+			}
 		}
 	}
 	if foundCount > 1 {
 		return Marker{}, false, newError(ErrInvalidMarker, 400, "multiple opaque markers", nil)
 	}
 	return found, foundCount == 1, nil
+}
+
+// validTokensIn returns every structurally valid opaque token found anywhere
+// in text, ignoring occurrences of the marker prefix that aren't shaped like
+// a token at all (e.g. a literal mention in ordinary conversation). Like
+// parseTokenShape, this only checks shape, not signature authenticity.
+func validTokensIn(text string) []Marker {
+	var out []Marker
+	for searchFrom := 0; ; {
+		idx := strings.Index(text[searchFrom:], markerPrefix)
+		if idx < 0 {
+			return out
+		}
+		start := searchFrom + idx
+		end := start + markerTokenLen
+		if end <= len(text) {
+			if marker, ok := parseTokenShape(text[start:end]); ok {
+				out = append(out, marker)
+			}
+		}
+		searchFrom = start + len(markerPrefix)
+	}
 }
 
 func rawTextValues(raw json.RawMessage) ([]string, error) {
