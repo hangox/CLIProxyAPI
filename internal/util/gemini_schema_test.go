@@ -1122,6 +1122,60 @@ func TestCleanJSONSchemaForGemini_PrefixItemsSimpleArray(t *testing.T) {
 	compareJSON(t, expected, result)
 }
 
+func TestCleanJSONSchemaForGemini_PreservesPrefixItemsPropertyName(t *testing.T) {
+	input := `{
+		"type": "object",
+		"properties": {
+			"prefixItems": {
+				"type": "object",
+				"properties": {
+					"prefixItems": {
+						"type": "array",
+						"items": {"type": "number"}
+					}
+				}
+			},
+			"list": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"prefixItems": {"type": "string"}
+					}
+				}
+			}
+		}
+	}`
+
+	result := CleanJSONSchemaForGemini(input)
+	compareJSON(t, input, result)
+}
+
+func TestCleanJSONSchemaForGemini_PrefixItemsEmptyTupleFallback(t *testing.T) {
+	input := `{
+		"type": "object",
+		"properties": {
+			"values": {
+				"type": "array",
+				"prefixItems": []
+			}
+		}
+	}`
+
+	expected := `{
+		"type": "object",
+		"properties": {
+			"values": {
+				"type": "array",
+				"items": {"type": "string"}
+			}
+		}
+	}`
+
+	result := CleanJSONSchemaForGemini(input)
+	compareJSON(t, expected, result)
+}
+
 func TestRemoveExtensionFields(t *testing.T) {
 	tests := []struct {
 		name     string

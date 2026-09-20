@@ -476,6 +476,9 @@ func flattenTypeArrays(jsonStr string) string {
 // element constraint was "prefixItems" would otherwise reach the backend with no "items" at all —
 // and Gemini's proto validation rejects an array-type schema that lacks one ("...items.items:
 // missing field"), even though the field is genuinely absent rather than malformed.
+// This rewrite intentionally also applies to Antigravity response schemas: tool parameters and
+// structured outputs share Gemini's Schema representation, so leaving tuples there would trigger
+// the same backend validation error.
 func flattenPrefixItems(jsonStr string) string {
 	paths := findPaths(jsonStr, "prefixItems")
 	sortByDepth(paths)
@@ -483,7 +486,12 @@ func flattenPrefixItems(jsonStr string) string {
 	for _, p := range paths {
 		items := gjson.Get(jsonStr, p).Array()
 		parentPath := trimSuffix(p, ".prefixItems")
+		if isPropertyDefinition(parentPath) {
+			continue
+		}
 
+		// Gemini requires array items to have a concrete type; string is the repository's
+		// conventional fallback placeholder for an empty schema.
 		selected := `{"type":"string"}`
 		var typeDescs []string
 		if len(items) > 0 {
