@@ -1049,6 +1049,79 @@ func TestCleanJSONSchemaForGemini_RemovesGeminiUnsupportedMetadataFields(t *test
 	compareJSON(t, expected, result)
 }
 
+// TestCleanJSONSchemaForGemini_PrefixItemsTupleFlattening reproduces a live 400 reported by a
+// Claude Code user proxying through ccsg/cliproxy to a Gemini backend:
+//
+//	GenerateContentRequest.tools[0].function_declarations[3].parameters
+//	  .properties[query].properties[where].items.items: missing field
+//
+// The offending tool schema used draft 2020-12 tuple validation ("prefixItems") to describe
+// [field, operator, value] triples. Gemini has no concept of tuples and silently ignored the
+// unrecognized "prefixItems" keyword, so the array-of-tuples schema reached the backend with no
+// "items" field at all — which Gemini's proto validation rejects outright.
+func TestCleanJSONSchemaForGemini_PrefixItemsTupleFlattening(t *testing.T) {
+	input := `{
+		"type": "object",
+		"properties": {
+			"where": {
+				"type": "array",
+				"maxItems": 10,
+				"items": {
+					"type": "array",
+					"prefixItems": [
+						{"type": "string"},
+						{"enum": ["eq", "ne", "gt"]},
+						{}
+					]
+				}
+			}
+		}
+	}`
+
+	result := CleanJSONSchemaForGemini(input)
+
+	if strings.Contains(result, "prefixItems") {
+		t.Errorf("prefixItems keyword should be removed, got: %s", result)
+	}
+
+	whereItems := gjson.Get(result, "properties.where.items")
+	if !whereItems.Get("items").Exists() {
+		t.Fatalf("properties.where.items must declare its own \"items\" field (Gemini rejects array schemas without one), got: %s", whereItems.Raw)
+	}
+	if whereItems.Get("items.type").String() == "" {
+		t.Errorf("properties.where.items.items must declare a type, got: %s", whereItems.Get("items").Raw)
+	}
+}
+
+func TestCleanJSONSchemaForGemini_PrefixItemsSimpleArray(t *testing.T) {
+	input := `{
+		"type": "object",
+		"properties": {
+			"point": {
+				"type": "array",
+				"prefixItems": [
+					{"type": "number"},
+					{"type": "number"}
+				]
+			}
+		}
+	}`
+
+	expected := `{
+		"type": "object",
+		"properties": {
+			"point": {
+				"type": "array",
+				"items": {"type": "number"},
+				"description": "Tuple element types in order: number, number"
+			}
+		}
+	}`
+
+	result := CleanJSONSchemaForGemini(input)
+	compareJSON(t, expected, result)
+}
+
 func TestRemoveExtensionFields(t *testing.T) {
 	tests := []struct {
 		name     string

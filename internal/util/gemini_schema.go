@@ -74,6 +74,7 @@ func cleanJSONSchema(jsonStr string, options jsonSchemaCleanOptions) string {
 		jsonStr = flattenAnyOfOneOf(jsonStr)
 	}
 	jsonStr = flattenTypeArrays(jsonStr)
+	jsonStr = flattenPrefixItems(jsonStr)
 
 	// Phase 3: Cleanup
 	jsonStr = removeUnsupportedKeywords(jsonStr)
@@ -465,6 +466,46 @@ func flattenTypeArrays(jsonStr string) string {
 			updated, _ := sjson.SetBytes([]byte(jsonStr), reqPath, filtered)
 			jsonStr = string(updated)
 		}
+	}
+	return jsonStr
+}
+
+// flattenPrefixItems converts JSON Schema tuple validation ("prefixItems", draft 2020-12) into a
+// single merged "items" schema. Gemini/Antigravity's array schema has no concept of positional
+// tuples and silently ignores an unrecognized "prefixItems" keyword, so an array schema whose only
+// element constraint was "prefixItems" would otherwise reach the backend with no "items" at all —
+// and Gemini's proto validation rejects an array-type schema that lacks one ("...items.items:
+// missing field"), even though the field is genuinely absent rather than malformed.
+func flattenPrefixItems(jsonStr string) string {
+	paths := findPaths(jsonStr, "prefixItems")
+	sortByDepth(paths)
+
+	for _, p := range paths {
+		items := gjson.Get(jsonStr, p).Array()
+		parentPath := trimSuffix(p, ".prefixItems")
+
+		selected := `{"type":"string"}`
+		var typeDescs []string
+		if len(items) > 0 {
+			bestIdx, _ := selectBest(items)
+			selected = items[bestIdx].Raw
+			for _, item := range items {
+				t := item.Get("type").String()
+				if t == "" {
+					t = "any"
+				}
+				typeDescs = append(typeDescs, t)
+			}
+		}
+
+		itemsPath := joinPath(parentPath, "items")
+		if !gjson.Get(jsonStr, itemsPath).Exists() {
+			jsonStr = setRawAt(jsonStr, itemsPath, selected)
+		}
+		if len(typeDescs) > 1 {
+			jsonStr = appendHint(jsonStr, parentPath, "Tuple element types in order: "+strings.Join(typeDescs, ", "))
+		}
+		jsonStr, _ = sjson.Delete(jsonStr, p)
 	}
 	return jsonStr
 }
