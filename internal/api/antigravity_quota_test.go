@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
@@ -15,8 +16,7 @@ import (
 )
 
 type antigravityQuotaTestExecutor struct {
-	models []executor.AntigravityModelQuota
-	err    error
+	models map[string][]executor.AntigravityModelQuota
 }
 
 func (e *antigravityQuotaTestExecutor) Identifier() string { return "antigravity" }
@@ -41,20 +41,32 @@ func (e *antigravityQuotaTestExecutor) HttpRequest(context.Context, *coreauth.Au
 	return nil, nil
 }
 
-func (e *antigravityQuotaTestExecutor) FetchAntigravityModelQuota(context.Context, *coreauth.Auth) ([]executor.AntigravityModelQuota, error) {
-	return e.models, e.err
+func (e *antigravityQuotaTestExecutor) FetchAntigravityModelQuota(_ context.Context, auth *coreauth.Auth) ([]executor.AntigravityModelQuota, error) {
+	return e.models[auth.ID], nil
 }
 
-func TestAntigravityQuotaHandlerReturnsRealPoolQuota(t *testing.T) {
+func TestAntigravityQuotaHandlerCombinesBurstAndWeeklyWindows(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	manager := coreauth.NewManager(nil, nil, nil)
-	testExecutor := &antigravityQuotaTestExecutor{models: []executor.AntigravityModelQuota{
-		{Model: "gemini-3.6-flash-high", RemainingPercent: 100},
-		{Model: "gemini-3.1-pro-low", RemainingPercent: 50},
+	testExecutor := &antigravityQuotaTestExecutor{models: map[string][]executor.AntigravityModelQuota{
+		"ag-healthy": {
+			{Model: "gemini-3.6-flash-high", RemainingPercent: 40},
+			{Model: "gemini-3.1-pro-low", RemainingPercent: 90},
+		},
 	}}
 	manager.RegisterExecutor(testExecutor)
-	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{ID: "ag-1", Provider: "antigravity"}); errRegister != nil {
-		t.Fatalf("register auth: %v", errRegister)
+
+	// Healthy account: not blocked, weekly quota partially used (min 40%).
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: "ag-healthy", Provider: "antigravity", Status: coreauth.StatusActive}); err != nil {
+		t.Fatalf("register healthy auth: %v", err)
+	}
+	// Blocked account: scheduler recorded a live 429 a moment ago.
+	recoverAt := time.Now().Add(30 * time.Minute)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID: "ag-blocked", Provider: "antigravity", Status: coreauth.StatusError,
+		Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: recoverAt},
+	}); err != nil {
+		t.Fatalf("register blocked auth: %v", err)
 	}
 
 	server := &Server{handlers: sdkhandlers.NewBaseAPIHandlers(nil, manager)}
@@ -72,26 +84,30 @@ func TestAntigravityQuotaHandlerReturnsRealPoolQuota(t *testing.T) {
 	if errDecode := json.Unmarshal(resp.Body.Bytes(), &got); errDecode != nil {
 		t.Fatalf("decode response: %v", errDecode)
 	}
-	if got.Provider != "antigravity" || len(got.Windows) != 1 {
+	if got.Provider != "antigravity" || len(got.Windows) != 2 {
 		t.Fatalf("response = %+v", got)
 	}
-	window := got.Windows[0]
-	if window.Name != "pool" || window.RemainingPercentage == nil || *window.RemainingPercentage != 75 {
-		t.Fatalf("window = %+v", window)
+
+	burst := got.Windows[0]
+	if burst.Name != "5h" || burst.RemainingPercentage == nil || *burst.RemainingPercentage != 50 {
+		t.Fatalf("burst window = %+v", burst)
 	}
-	if !window.Available {
-		t.Fatalf("expected pool to be available, window = %+v", window)
+	if !burst.Available {
+		t.Fatalf("expected burst window available (one healthy account), window = %+v", burst)
+	}
+	if burst.ResetsAt == nil {
+		t.Fatalf("expected burst window to carry the blocked account's reset time")
+	}
+
+	weekly := got.Windows[1]
+	if weekly.Name != "7d" || weekly.RemainingPercentage == nil || *weekly.RemainingPercentage != 40 {
+		t.Fatalf("weekly window = %+v (expected worst-case 40%% from the only unblocked account)", weekly)
 	}
 }
 
-func TestAntigravityQuotaHandlerUnavailableWhenNoData(t *testing.T) {
+func TestAntigravityQuotaHandlerUnavailableWhenNoAccounts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	manager := coreauth.NewManager(nil, nil, nil)
-	testExecutor := &antigravityQuotaTestExecutor{}
-	manager.RegisterExecutor(testExecutor)
-	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{ID: "ag-1", Provider: "antigravity"}); errRegister != nil {
-		t.Fatalf("register auth: %v", errRegister)
-	}
 
 	server := &Server{handlers: sdkhandlers.NewBaseAPIHandlers(nil, manager)}
 	router := gin.New()
