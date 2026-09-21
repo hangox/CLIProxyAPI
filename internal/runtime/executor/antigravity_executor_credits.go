@@ -427,16 +427,165 @@ func (e *AntigravityExecutor) maybeRefreshAntigravityCreditsHint(ctx context.Con
 	}(state, authCopy, accessToken)
 }
 
-func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Context, auth *cliproxyauth.Auth, accessToken string) {
+// RefreshAntigravityCredits refreshes and returns the latest Google One AI credit balance.
+func (e *AntigravityExecutor) RefreshAntigravityCredits(ctx context.Context, auth *cliproxyauth.Auth) (cliproxyauth.AntigravityCreditsHint, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if auth == nil || strings.TrimSpace(auth.ID) == "" {
-		return
+		return cliproxyauth.AntigravityCreditsHint{}, fmt.Errorf("antigravity auth is missing")
+	}
+
+	updated := auth.Clone()
+	accessToken, refreshed, errToken := e.ensureAccessToken(ctx, updated)
+	if errToken != nil {
+		return cliproxyauth.AntigravityCreditsHint{}, errToken
+	}
+	if refreshed != nil {
+		updated = refreshed
+	}
+	return e.fetchAntigravityCreditsHint(ctx, updated, accessToken)
+}
+
+// AntigravityModelQuota reports the real per-model remaining quota fraction
+// reported by Google's own fetchAvailableModels endpoint, as opposed to the
+// Google One AI paid-credits balance tracked by AntigravityCreditsHint (a
+// separate, optional premium tier most accounts don't have). This is the
+// signal that actually predicts whether the next request for that model
+// will succeed.
+type AntigravityModelQuota struct {
+	Model            string
+	RemainingPercent float64
+	ResetAt          time.Time
+}
+
+// FetchAntigravityModelQuota queries Google's fetchAvailableModels endpoint for
+// the given auth's real per-model remaining quota (0-100).
+func (e *AntigravityExecutor) FetchAntigravityModelQuota(ctx context.Context, auth *cliproxyauth.Auth) ([]AntigravityModelQuota, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if auth == nil || strings.TrimSpace(auth.ID) == "" {
+		return nil, fmt.Errorf("antigravity auth is missing")
+	}
+
+	updated := auth.Clone()
+	accessToken, refreshed, errToken := e.ensureAccessToken(ctx, updated)
+	if errToken != nil {
+		return nil, errToken
+	}
+	if refreshed != nil {
+		updated = refreshed
+	}
+	projectID := antigravityProjectIDFromAuth(updated)
+	if projectID == "" {
+		return nil, fmt.Errorf("antigravity project id is missing")
+	}
+
+	reqBody, errMarshal := json.Marshal(map[string]any{"project": projectID})
+	if errMarshal != nil {
+		return nil, fmt.Errorf("marshal fetchAvailableModels request: %w", errMarshal)
+	}
+
+	userAgent := resolveUserAgent(updated)
+	httpClient := newAntigravityHTTPClient(ctx, e.cfg, updated, 0)
+
+	var lastErr error
+	for _, endpoint := range []string{
+		"https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+		"https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+		"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels",
+	} {
+		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+		if errReq != nil {
+			lastErr = fmt.Errorf("create fetchAvailableModels request: %w", errReq)
+			continue
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "application/json")
+		httpReq.Header.Set("User-Agent", userAgent)
+
+		httpResp, errDo := httpClient.Do(httpReq)
+		if errDo != nil {
+			lastErr = fmt.Errorf("fetchAvailableModels request: %w", errDo)
+			continue
+		}
+		bodyBytes, errRead := io.ReadAll(httpResp.Body)
+		_ = httpResp.Body.Close()
+		if errRead != nil {
+			lastErr = fmt.Errorf("read fetchAvailableModels response: %w", errRead)
+			continue
+		}
+		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+			lastErr = fmt.Errorf("fetchAvailableModels returned status %d", httpResp.StatusCode)
+			continue
+		}
+		return parseAntigravityModelQuota(bodyBytes), nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("fetchAvailableModels: no endpoint succeeded")
+	}
+	return nil, lastErr
+}
+
+func parseAntigravityModelQuota(body []byte) []AntigravityModelQuota {
+	models := gjson.GetBytes(body, "models")
+	if !models.IsObject() {
+		return nil
+	}
+	out := make([]AntigravityModelQuota, 0)
+	models.ForEach(func(key, value gjson.Result) bool {
+		quota := value.Get("quotaInfo")
+		if !quota.Exists() {
+			quota = value.Get("quota_info")
+		}
+		if !quota.Exists() {
+			return true
+		}
+		fraction := quota.Get("remainingFraction")
+		if !fraction.Exists() {
+			fraction = quota.Get("remaining_fraction")
+		}
+		if !fraction.Exists() {
+			return true
+		}
+		entry := AntigravityModelQuota{
+			Model:            key.String(),
+			RemainingPercent: fraction.Float() * 100,
+		}
+		resetAt := quota.Get("resetTime")
+		if !resetAt.Exists() {
+			resetAt = quota.Get("reset_time")
+		}
+		if resetAt.Exists() {
+			if t, errParse := time.Parse(time.RFC3339, resetAt.String()); errParse == nil {
+				entry.ResetAt = t
+			}
+		}
+		out = append(out, entry)
+		return true
+	})
+	return out
+}
+
+func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Context, auth *cliproxyauth.Auth, accessToken string) {
+	_, errRefresh := e.fetchAntigravityCreditsHint(ctx, auth, accessToken)
+	if errRefresh != nil {
+		log.Debugf("antigravity executor: refresh credits hint error: %v", errRefresh)
+	}
+}
+
+func (e *AntigravityExecutor) fetchAntigravityCreditsHint(ctx context.Context, auth *cliproxyauth.Auth, accessToken string) (cliproxyauth.AntigravityCreditsHint, error) {
+	if auth == nil || strings.TrimSpace(auth.ID) == "" {
+		return cliproxyauth.AntigravityCreditsHint{}, fmt.Errorf("antigravity auth is missing")
 	}
 	token := strings.TrimSpace(accessToken)
 	if token == "" {
 		token = metaStringValue(auth.Metadata, "access_token")
 	}
 	if token == "" {
-		return
+		return cliproxyauth.AntigravityCreditsHint{}, fmt.Errorf("antigravity access token is missing")
 	}
 
 	userAgent := resolveUserAgent(auth)
@@ -446,15 +595,13 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 		},
 	})
 	if errMarshal != nil {
-		log.Debugf("antigravity executor: marshal loadCodeAssist request error: %v", errMarshal)
-		return
+		return cliproxyauth.AntigravityCreditsHint{}, fmt.Errorf("marshal loadCodeAssist request: %w", errMarshal)
 	}
 	baseURL := antigravityLoadCodeAssistBaseURL(auth)
 	endpointURL := strings.TrimSuffix(baseURL, "/") + "/v1internal:loadCodeAssist"
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(loadReqBody))
 	if errReq != nil {
-		log.Debugf("antigravity executor: create loadCodeAssist request error: %v", errReq)
-		return
+		return cliproxyauth.AntigravityCreditsHint{}, fmt.Errorf("create loadCodeAssist request: %w", errReq)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Accept", "*/*")
@@ -464,8 +611,7 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
-		log.Debugf("antigravity executor: loadCodeAssist request error: %v", errDo)
-		return
+		return cliproxyauth.AntigravityCreditsHint{}, fmt.Errorf("loadCodeAssist request: %w", errDo)
 	}
 	defer func() {
 		if errClose := httpResp.Body.Close(); errClose != nil {
@@ -474,9 +620,11 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 	}()
 
 	bodyBytes, errRead := io.ReadAll(httpResp.Body)
-	if errRead != nil || httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-		log.Debugf("antigravity executor: loadCodeAssist returned status %d, err=%v", httpResp.StatusCode, errRead)
-		return
+	if errRead != nil {
+		return cliproxyauth.AntigravityCreditsHint{}, fmt.Errorf("read loadCodeAssist response: %w", errRead)
+	}
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		return cliproxyauth.AntigravityCreditsHint{}, fmt.Errorf("loadCodeAssist returned status %d", httpResp.StatusCode)
 	}
 
 	authID := strings.TrimSpace(auth.ID)
@@ -484,13 +632,14 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 
 	credits := gjson.GetBytes(bodyBytes, "paidTier.availableCredits")
 	if !credits.IsArray() {
-		cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{
+		hint := cliproxyauth.AntigravityCreditsHint{
 			Known:      true,
 			Available:  false,
 			PaidTierID: paidTierID,
 			UpdatedAt:  time.Now(),
-		})
-		return
+		}
+		cliproxyauth.SetAntigravityCreditsHint(authID, hint)
+		return hint, nil
 	}
 	for _, credit := range credits.Array() {
 		if !strings.EqualFold(credit.Get("creditType").String(), "GOOGLE_ONE_AI") {
@@ -504,26 +653,35 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 		if errMA != nil {
 			continue
 		}
-		bal := antigravityCreditsBalance{
-			CreditAmount:    creditAmount,
-			MinCreditAmount: minAmount,
-			PaidTierID:      paidTierID,
-			Known:           true,
-		}
-		storeAntigravityCreditsBalanceBestEffort(authID, bal)
-		cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{
+		hint := cliproxyauth.AntigravityCreditsHint{
 			Known:           true,
 			Available:       creditAmount >= minAmount,
 			CreditAmount:    creditAmount,
 			MinCreditAmount: minAmount,
 			PaidTierID:      paidTierID,
 			UpdatedAt:       time.Now(),
+		}
+		storeAntigravityCreditsBalanceBestEffort(authID, antigravityCreditsBalance{
+			CreditAmount:    creditAmount,
+			MinCreditAmount: minAmount,
+			PaidTierID:      paidTierID,
+			Known:           true,
 		})
-		if creditAmount >= minAmount {
+		cliproxyauth.SetAntigravityCreditsHint(authID, hint)
+		if hint.Available {
 			clearAntigravityCreditsPermanentlyDisabled(auth)
 		}
-		return
+		return hint, nil
 	}
+
+	hint := cliproxyauth.AntigravityCreditsHint{
+		Known:      true,
+		Available:  false,
+		PaidTierID: paidTierID,
+		UpdatedAt:  time.Now(),
+	}
+	cliproxyauth.SetAntigravityCreditsHint(authID, hint)
+	return hint, nil
 }
 func antigravityRetryAttempts(auth *cliproxyauth.Auth, cfg *config.Config) int {
 	retry := 0
