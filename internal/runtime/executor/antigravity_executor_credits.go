@@ -474,9 +474,9 @@ const (
 )
 
 var antigravityQuotaSummaryEndpoints = []string{
-	"https://cloudcode-pa.googleapis.com" + antigravityQuotaSummaryPath,
 	"https://daily-cloudcode-pa.googleapis.com" + antigravityQuotaSummaryPath,
 	"https://daily-cloudcode-pa.sandbox.googleapis.com" + antigravityQuotaSummaryPath,
+	"https://cloudcode-pa.googleapis.com" + antigravityQuotaSummaryPath,
 }
 
 // FetchAntigravityQuotaSummary 查询管理面板使用的 Google 官方配额摘要接口。

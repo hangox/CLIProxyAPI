@@ -825,6 +825,9 @@ func TestFetchAntigravityQuotaSummaryUsesOfficialEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
+	if got := antigravityQuotaSummaryEndpoints; len(got) != 3 || got[0] != "https://daily-cloudcode-pa.googleapis.com"+antigravityQuotaSummaryPath || got[1] != "https://daily-cloudcode-pa.sandbox.googleapis.com"+antigravityQuotaSummaryPath || got[2] != "https://cloudcode-pa.googleapis.com"+antigravityQuotaSummaryPath {
+		t.Fatalf("quota summary endpoint priority = %#v", got)
+	}
 	oldEndpoints := antigravityQuotaSummaryEndpoints
 	antigravityQuotaSummaryEndpoints = []string{server.URL + "/v1internal:retrieveUserQuotaSummary"}
 	t.Cleanup(func() { antigravityQuotaSummaryEndpoints = oldEndpoints })
