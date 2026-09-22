@@ -765,3 +765,93 @@ func TestParseMetaFloat(t *testing.T) {
 		})
 	}
 }
+
+func TestParseAntigravityQuotaSummary(t *testing.T) {
+	resetAt := time.Date(2026, time.September, 22, 12, 0, 0, 0, time.UTC)
+	body := []byte(`{
+		"groups": [
+			{
+				"displayName": "Gemini models",
+				"buckets": [
+					{"bucketId": "gemini-5h", "displayName": "5 Hour Quota", "remainingFraction": 0.93, "resetTime": "2026-09-22T12:00:00Z"},
+					{"bucketId": "gemini-weekly", "displayName": "Weekly Quota", "remainingFraction": 1, "resetTime": "2026-09-29T12:00:00Z"}
+				]
+			},
+			{
+				"displayName": "Claude and GPT models",
+				"buckets": {
+					"five_hour": {"bucketId": "claude-5h", "window": "five_hour", "displayName": "5 Hour Quota", "remainingFraction": "0.88", "resetTime": "2026-09-22T13:00:00Z"},
+					"weekly": {"bucketId": "claude-weekly", "window": "weekly", "displayName": "Weekly Quota", "remainingFraction": 0.55, "resetTime": "2026-09-29T13:00:00Z"}
+				}
+			}
+		]
+	}`)
+
+	summary, err := parseAntigravityQuotaSummary(body)
+	if err != nil {
+		t.Fatalf("parseAntigravityQuotaSummary() error = %v", err)
+	}
+	if len(summary.Groups) != 2 {
+		t.Fatalf("groups = %+v", summary.Groups)
+	}
+	if summary.Groups[0].Name != "Gemini models" || summary.Groups[0].Label != "Gemini models" || len(summary.Groups[0].Buckets) != 2 {
+		t.Fatalf("Gemini group = %+v", summary.Groups[0])
+	}
+	if summary.Groups[0].Buckets[0].RemainingFraction != 0.93 || !summary.Groups[0].Buckets[0].ResetAt.Equal(resetAt) {
+		t.Fatalf("Gemini 5h bucket = %+v", summary.Groups[0].Buckets[0])
+	}
+	if summary.Groups[1].Name != "Claude and GPT models" || summary.Groups[1].Label != "Claude and GPT models" || len(summary.Groups[1].Buckets) != 2 {
+		t.Fatalf("Claude/GPT group = %+v", summary.Groups[1])
+	}
+}
+
+func TestFetchAntigravityQuotaSummaryUsesOfficialEndpoint(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1internal:retrieveUserQuotaSummary" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
+			t.Fatalf("authorization = %q", got)
+		}
+		if errDecode := json.NewDecoder(r.Body).Decode(&requestBody); errDecode != nil {
+			t.Fatalf("decode request body: %v", errDecode)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-5h","window":"5h","displayName":"5 Hour Quota","remainingFraction":0.93}]}]}`))
+	}))
+	defer server.Close()
+
+	oldEndpoints := antigravityQuotaSummaryEndpoints
+	antigravityQuotaSummaryEndpoints = []string{server.URL + "/v1internal:retrieveUserQuotaSummary"}
+	t.Cleanup(func() { antigravityQuotaSummaryEndpoints = oldEndpoints })
+
+	exec := NewAntigravityExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID: "summary-endpoint-auth",
+		Metadata: map[string]any{
+			"access_token": "access-token",
+			"project_id":   "project-1",
+			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	summary, err := exec.FetchAntigravityQuotaSummary(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("FetchAntigravityQuotaSummary() error = %v", err)
+	}
+	if requestBody["project"] != "project-1" {
+		t.Fatalf("request body = %+v", requestBody)
+	}
+	if len(summary.Groups) != 1 || summary.Groups[0].Name != "Gemini Models" {
+		t.Fatalf("summary = %+v", summary)
+	}
+
+	requestBody = nil
+	delete(auth.Metadata, "project_id")
+	if _, err = exec.FetchAntigravityQuotaSummary(context.Background(), auth); err != nil {
+		t.Fatalf("FetchAntigravityQuotaSummary() without project error = %v", err)
+	}
+	if len(requestBody) != 0 {
+		t.Fatalf("request body without project = %+v, want empty object", requestBody)
+	}
+}

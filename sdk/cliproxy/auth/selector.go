@@ -16,7 +16,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -159,24 +158,7 @@ func authPriority(auth *Auth) int {
 }
 
 func authWeight(auth *Auth) int64 {
-	if auth == nil {
-		return credentialweight.Default
-	}
-	if rawWeight, ok := auth.Attributes[AttributeWeight]; ok && strings.TrimSpace(rawWeight) != "" {
-		weight, errParse := credentialweight.ParseString(rawWeight)
-		if errParse != nil {
-			return 0
-		}
-		return weight
-	}
-	if rawWeight, ok := auth.Metadata[AttributeWeight]; ok {
-		weight, errParse := credentialweight.ParseValue(rawWeight)
-		if errParse != nil {
-			return 0
-		}
-		return weight
-	}
-	return credentialweight.Default
+	return EffectiveAuthWeight(auth)
 }
 
 func canonicalModelKey(model string) string {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -447,58 +448,68 @@ func (e *AntigravityExecutor) RefreshAntigravityCredits(ctx context.Context, aut
 	return e.fetchAntigravityCreditsHint(ctx, updated, accessToken)
 }
 
-// AntigravityModelQuota reports the real per-model remaining quota fraction
-// reported by Google's own fetchAvailableModels endpoint, as opposed to the
-// Google One AI paid-credits balance tracked by AntigravityCreditsHint (a
-// separate, optional premium tier most accounts don't have). This is the
-// signal that actually predicts whether the next request for that model
-// will succeed.
-type AntigravityModelQuota struct {
-	Model            string
-	RemainingPercent float64
-	ResetAt          time.Time
+// AntigravityQuotaBucket 是 retrieveUserQuotaSummary 返回的一个时间窗口。
+type AntigravityQuotaBucket struct {
+	Name              string
+	Label             string
+	RemainingFraction float64
+	ResetAt           time.Time
 }
 
-// FetchAntigravityModelQuota queries Google's fetchAvailableModels endpoint for
-// the given auth's real per-model remaining quota (0-100).
-func (e *AntigravityExecutor) FetchAntigravityModelQuota(ctx context.Context, auth *cliproxyauth.Auth) ([]AntigravityModelQuota, error) {
+// AntigravityQuotaGroup 是 Google 官方配额摘要中的模型分组。
+type AntigravityQuotaGroup struct {
+	Name    string
+	Label   string
+	Buckets []AntigravityQuotaBucket
+}
+
+// AntigravityQuotaSummary 是 Google 官方 retrieveUserQuotaSummary 响应的脱敏结构。
+type AntigravityQuotaSummary struct {
+	Groups []AntigravityQuotaGroup
+}
+
+const antigravityQuotaSummaryPath = "/v1internal:retrieveUserQuotaSummary"
+
+var antigravityQuotaSummaryEndpoints = []string{
+	"https://cloudcode-pa.googleapis.com" + antigravityQuotaSummaryPath,
+	"https://daily-cloudcode-pa.googleapis.com" + antigravityQuotaSummaryPath,
+	"https://daily-cloudcode-pa.sandbox.googleapis.com" + antigravityQuotaSummaryPath,
+}
+
+// FetchAntigravityQuotaSummary 查询管理面板使用的 Google 官方配额摘要接口。
+func (e *AntigravityExecutor) FetchAntigravityQuotaSummary(ctx context.Context, auth *cliproxyauth.Auth) (AntigravityQuotaSummary, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if auth == nil || strings.TrimSpace(auth.ID) == "" {
-		return nil, fmt.Errorf("antigravity auth is missing")
+		return AntigravityQuotaSummary{}, fmt.Errorf("antigravity auth is missing")
 	}
 
 	updated := auth.Clone()
 	accessToken, refreshed, errToken := e.ensureAccessToken(ctx, updated)
 	if errToken != nil {
-		return nil, errToken
+		return AntigravityQuotaSummary{}, errToken
 	}
 	if refreshed != nil {
 		updated = refreshed
 	}
 	projectID := antigravityProjectIDFromAuth(updated)
-	if projectID == "" {
-		return nil, fmt.Errorf("antigravity project id is missing")
+	requestPayload := map[string]any{}
+	if projectID != "" {
+		requestPayload["project"] = projectID
 	}
-
-	reqBody, errMarshal := json.Marshal(map[string]any{"project": projectID})
+	reqBody, errMarshal := json.Marshal(requestPayload)
 	if errMarshal != nil {
-		return nil, fmt.Errorf("marshal fetchAvailableModels request: %w", errMarshal)
+		return AntigravityQuotaSummary{}, fmt.Errorf("marshal retrieveUserQuotaSummary request: %w", errMarshal)
 	}
 
 	userAgent := resolveUserAgent(updated)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, updated, 0)
-
 	var lastErr error
-	for _, endpoint := range []string{
-		"https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-		"https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
-		"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels",
-	} {
+	for _, endpoint := range antigravityQuotaSummaryEndpoints {
 		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
 		if errReq != nil {
-			lastErr = fmt.Errorf("create fetchAvailableModels request: %w", errReq)
+			lastErr = fmt.Errorf("create retrieveUserQuotaSummary request: %w", errReq)
 			continue
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+accessToken)
@@ -508,65 +519,219 @@ func (e *AntigravityExecutor) FetchAntigravityModelQuota(ctx context.Context, au
 
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
-			lastErr = fmt.Errorf("fetchAvailableModels request: %w", errDo)
+			lastErr = fmt.Errorf("retrieveUserQuotaSummary request: %w", errDo)
 			continue
 		}
 		bodyBytes, errRead := io.ReadAll(httpResp.Body)
 		_ = httpResp.Body.Close()
 		if errRead != nil {
-			lastErr = fmt.Errorf("read fetchAvailableModels response: %w", errRead)
+			lastErr = fmt.Errorf("read retrieveUserQuotaSummary response: %w", errRead)
 			continue
 		}
 		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-			lastErr = fmt.Errorf("fetchAvailableModels returned status %d", httpResp.StatusCode)
+			lastErr = fmt.Errorf("retrieveUserQuotaSummary returned status %d", httpResp.StatusCode)
 			continue
 		}
-		return parseAntigravityModelQuota(bodyBytes), nil
+		summary, errParse := parseAntigravityQuotaSummary(bodyBytes)
+		if errParse != nil {
+			lastErr = fmt.Errorf("parse retrieveUserQuotaSummary response: %w", errParse)
+			continue
+		}
+		return summary, nil
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("fetchAvailableModels: no endpoint succeeded")
+		lastErr = fmt.Errorf("retrieveUserQuotaSummary: no endpoint succeeded")
 	}
-	return nil, lastErr
+	return AntigravityQuotaSummary{}, lastErr
 }
 
-func parseAntigravityModelQuota(body []byte) []AntigravityModelQuota {
-	models := gjson.GetBytes(body, "models")
-	if !models.IsObject() {
-		return nil
+type antigravityQuotaSummaryJSON struct {
+	Groups json.RawMessage `json:"groups"`
+}
+
+type antigravityQuotaGroupJSON struct {
+	Name           string          `json:"name"`
+	Label          string          `json:"label"`
+	DisplayName    string          `json:"displayName"`
+	DisplayNameAlt string          `json:"display_name"`
+	Buckets        json.RawMessage `json:"buckets"`
+}
+
+type antigravityQuotaBucketJSON struct {
+	Name                 string          `json:"name"`
+	Label                string          `json:"label"`
+	BucketID             string          `json:"bucketId"`
+	BucketIDAlt          string          `json:"bucket_id"`
+	Window               string          `json:"window"`
+	DisplayName          string          `json:"displayName"`
+	DisplayNameAlt       string          `json:"display_name"`
+	RemainingFraction    json.RawMessage `json:"remainingFraction"`
+	RemainingFractionAlt json.RawMessage `json:"remaining_fraction"`
+	ResetTime            string          `json:"resetTime"`
+	ResetTimeAlt         string          `json:"reset_time"`
+}
+
+func parseAntigravityQuotaSummary(body []byte) (AntigravityQuotaSummary, error) {
+	var payload antigravityQuotaSummaryJSON
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return AntigravityQuotaSummary{}, err
 	}
-	out := make([]AntigravityModelQuota, 0)
-	models.ForEach(func(key, value gjson.Result) bool {
-		quota := value.Get("quotaInfo")
-		if !quota.Exists() {
-			quota = value.Get("quota_info")
+	if len(payload.Groups) == 0 || string(payload.Groups) == "null" {
+		return AntigravityQuotaSummary{}, nil
+	}
+
+	var groups []antigravityQuotaGroupJSON
+	if err := json.Unmarshal(payload.Groups, &groups); err != nil {
+		var groupMap map[string]antigravityQuotaGroupJSON
+		if mapErr := json.Unmarshal(payload.Groups, &groupMap); mapErr != nil {
+			return AntigravityQuotaSummary{}, err
 		}
-		if !quota.Exists() {
-			return true
+		for name, group := range groupMap {
+			if strings.TrimSpace(group.Name) == "" {
+				group.Name = name
+			}
+			groups = append(groups, group)
 		}
-		fraction := quota.Get("remainingFraction")
-		if !fraction.Exists() {
-			fraction = quota.Get("remaining_fraction")
+	}
+
+	out := AntigravityQuotaSummary{Groups: make([]AntigravityQuotaGroup, 0, len(groups))}
+	for _, group := range groups {
+		label := strings.TrimSpace(group.Label)
+		if label == "" {
+			label = strings.TrimSpace(group.DisplayName)
 		}
-		if !fraction.Exists() {
-			return true
+		if label == "" {
+			label = strings.TrimSpace(group.DisplayNameAlt)
 		}
-		entry := AntigravityModelQuota{
-			Model:            key.String(),
-			RemainingPercent: fraction.Float() * 100,
+		buckets, errBuckets := parseAntigravityQuotaBuckets(group.Buckets)
+		if errBuckets != nil {
+			return AntigravityQuotaSummary{}, errBuckets
 		}
-		resetAt := quota.Get("resetTime")
-		if !resetAt.Exists() {
-			resetAt = quota.Get("reset_time")
+		name := strings.TrimSpace(group.Name)
+		if name == "" {
+			name = label
 		}
-		if resetAt.Exists() {
-			if t, errParse := time.Parse(time.RFC3339, resetAt.String()); errParse == nil {
-				entry.ResetAt = t
+		out.Groups = append(out.Groups, AntigravityQuotaGroup{
+			Name:    name,
+			Label:   label,
+			Buckets: buckets,
+		})
+	}
+	return out, nil
+}
+
+func parseAntigravityQuotaFraction(raw json.RawMessage) (float64, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, false
+	}
+	var numeric float64
+	if err := json.Unmarshal(raw, &numeric); err == nil && isFiniteFloat(numeric) {
+		return numeric, true
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return 0, false
+	}
+	numeric, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+	return numeric, err == nil && isFiniteFloat(numeric)
+}
+
+func parseAntigravityQuotaBuckets(raw json.RawMessage) ([]AntigravityQuotaBucket, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var items []antigravityQuotaBucketJSON
+	if err := json.Unmarshal(raw, &items); err != nil {
+		var itemMap map[string]antigravityQuotaBucketJSON
+		if mapErr := json.Unmarshal(raw, &itemMap); mapErr != nil {
+			return nil, err
+		}
+		for name, item := range itemMap {
+			if strings.TrimSpace(item.Name) == "" {
+				item.Name = name
+			}
+			items = append(items, item)
+		}
+	}
+	out := make([]AntigravityQuotaBucket, 0, len(items))
+	for _, item := range items {
+		remainingRaw := item.RemainingFraction
+		if len(remainingRaw) == 0 {
+			remainingRaw = item.RemainingFractionAlt
+		}
+		remainingFraction, okFraction := parseAntigravityQuotaFraction(remainingRaw)
+		if !okFraction {
+			continue
+		}
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			name = strings.TrimSpace(item.BucketID)
+		}
+		if name == "" {
+			name = strings.TrimSpace(item.BucketIDAlt)
+		}
+		label := strings.TrimSpace(item.Label)
+		if label == "" {
+			label = strings.TrimSpace(item.DisplayName)
+		}
+		if label == "" {
+			label = strings.TrimSpace(item.DisplayNameAlt)
+		}
+		if window := strings.TrimSpace(item.Window); window != "" {
+			label = strings.TrimSpace(label + " " + window)
+		}
+		resetTime := strings.TrimSpace(item.ResetTime)
+		if resetTime == "" {
+			resetTime = strings.TrimSpace(item.ResetTimeAlt)
+		}
+		resetAt := time.Time{}
+		if resetTime != "" {
+			if parsed, errParse := time.Parse(time.RFC3339, resetTime); errParse == nil {
+				resetAt = parsed
 			}
 		}
-		out = append(out, entry)
-		return true
-	})
-	return out
+		out = append(out, AntigravityQuotaBucket{
+			Name:              name,
+			Label:             label,
+			RemainingFraction: remainingFraction,
+			ResetAt:           resetAt,
+		})
+	}
+	return out, nil
+}
+
+func isFiniteFloat(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+// AntigravityModelQuota 保留旧的模型配额接口，内部改由官方摘要接口提供数据。
+type AntigravityModelQuota struct {
+	Model            string
+	RemainingPercent float64
+	ResetAt          time.Time
+}
+
+// FetchAntigravityModelQuota 兼容旧调用方，将官方分组的周窗口展平返回。
+func (e *AntigravityExecutor) FetchAntigravityModelQuota(ctx context.Context, auth *cliproxyauth.Auth) ([]AntigravityModelQuota, error) {
+	summary, err := e.FetchAntigravityQuotaSummary(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AntigravityModelQuota, 0)
+	for _, group := range summary.Groups {
+		for _, bucket := range group.Buckets {
+			name := strings.ToLower(bucket.Name + " " + bucket.Label)
+			if !strings.Contains(name, "week") && !strings.Contains(name, "7d") && !strings.Contains(name, "7 day") {
+				continue
+			}
+			out = append(out, AntigravityModelQuota{
+				Model:            group.Name,
+				RemainingPercent: bucket.RemainingFraction * 100,
+				ResetAt:          bucket.ResetAt,
+			})
+		}
+	}
+	return out, nil
 }
 
 func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Context, auth *cliproxyauth.Auth, accessToken string) {
