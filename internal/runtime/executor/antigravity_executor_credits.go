@@ -468,7 +468,10 @@ type AntigravityQuotaSummary struct {
 	Groups []AntigravityQuotaGroup
 }
 
-const antigravityQuotaSummaryPath = "/v1internal:retrieveUserQuotaSummary"
+const (
+	antigravityQuotaSummaryPath      = "/v1internal:retrieveUserQuotaSummary"
+	antigravityQuotaSummaryUserAgent = "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)"
+)
 
 var antigravityQuotaSummaryEndpoints = []string{
 	"https://cloudcode-pa.googleapis.com" + antigravityQuotaSummaryPath,
@@ -503,7 +506,6 @@ func (e *AntigravityExecutor) FetchAntigravityQuotaSummary(ctx context.Context, 
 		return AntigravityQuotaSummary{}, fmt.Errorf("marshal retrieveUserQuotaSummary request: %w", errMarshal)
 	}
 
-	userAgent := resolveUserAgent(updated)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, updated, 0)
 	var lastErr error
 	for _, endpoint := range antigravityQuotaSummaryEndpoints {
@@ -515,7 +517,7 @@ func (e *AntigravityExecutor) FetchAntigravityQuotaSummary(ctx context.Context, 
 		httpReq.Header.Set("Authorization", "Bearer "+accessToken)
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "application/json")
-		httpReq.Header.Set("User-Agent", userAgent)
+		httpReq.Header.Set("User-Agent", antigravityQuotaSummaryUserAgent)
 
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {

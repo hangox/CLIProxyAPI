@@ -814,6 +814,9 @@ func TestFetchAntigravityQuotaSummaryUsesOfficialEndpoint(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
 			t.Fatalf("authorization = %q", got)
 		}
+		if got := r.Header.Get("User-Agent"); got != antigravityQuotaSummaryUserAgent {
+			t.Fatalf("user-agent = %q, want %q", got, antigravityQuotaSummaryUserAgent)
+		}
 		if errDecode := json.NewDecoder(r.Body).Decode(&requestBody); errDecode != nil {
 			t.Fatalf("decode request body: %v", errDecode)
 		}
