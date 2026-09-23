@@ -25,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -109,6 +110,9 @@ type Server struct {
 
 	exampleAPIKeySafeModeEnabled bool
 	exampleAPIKeySafeModeActive  atomic.Bool
+
+	quotaEngine   *quota.QuotaEngine
+	quotaEngineMu sync.Mutex
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -406,5 +410,24 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	log.Debug("API server stopped")
+	return nil
+}
+
+func (s *Server) getQuotaEngine() *quota.QuotaEngine {
+	if s == nil {
+		return nil
+	}
+	s.quotaEngineMu.Lock()
+	defer s.quotaEngineMu.Unlock()
+	if s.quotaEngine != nil {
+		return s.quotaEngine
+	}
+	if s.handlers != nil && s.handlers.AuthManager != nil {
+		engine := quota.NewQuotaEngine(quota.WrapCoreAuthManager(s.handlers.AuthManager))
+		engine.Register(quota.NewAntigravityStrategy())
+		engine.Register(quota.NewCodexStrategy(nil))
+		s.quotaEngine = engine
+		return s.quotaEngine
+	}
 	return nil
 }

@@ -141,7 +141,8 @@ func (s *Server) setupRoutes() {
 		})
 	})
 
-	// Antigravity quota is authenticated with the same API key as proxy requests.
+	// Unified quota endpoint and backwards-compatible Antigravity quota endpoint.
+	s.engine.GET("/api/quota", AuthMiddleware(s.accessManager), s.unifiedQuotaHandler)
 	s.engine.GET("/api/antigravity/quota", AuthMiddleware(s.accessManager), s.antigravityQuotaHandler)
 
 	// OAuth callback endpoints (reuse main server port)
