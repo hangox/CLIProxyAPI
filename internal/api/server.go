@@ -423,9 +423,13 @@ func (s *Server) getQuotaEngine() *quota.QuotaEngine {
 		return s.quotaEngine
 	}
 	if s.handlers != nil && s.handlers.AuthManager != nil {
+		var proxyURL string
+		if s.cfg != nil {
+			proxyURL = s.cfg.ProxyURL
+		}
 		engine := quota.NewQuotaEngine(quota.WrapCoreAuthManager(s.handlers.AuthManager))
 		engine.Register(quota.NewAntigravityStrategy())
-		engine.Register(quota.NewCodexStrategy(nil))
+		engine.Register(quota.NewCodexStrategy(nil, proxyURL))
 		s.quotaEngine = engine
 		return s.quotaEngine
 	}

@@ -368,3 +368,98 @@ func TestCodexStrategy(t *testing.T) {
 		t.Errorf("bucket[1] = %+v, want 5h 90%%", data.Buckets[1])
 	}
 }
+
+func TestCodexCredsCompatibility(t *testing.T) {
+	tests := []struct {
+		name          string
+		auth          *coreauth.Auth
+		wantAPIKey    string
+		wantAccountID string
+	}{
+		{
+			name: "attributes access_token and account_id",
+			auth: &coreauth.Auth{
+				Attributes: map[string]string{
+					"access_token": "token-1",
+					"account_id":   "acc-1",
+				},
+			},
+			wantAPIKey:    "token-1",
+			wantAccountID: "acc-1",
+		},
+		{
+			name: "attributes api_key and chatgpt_account_id",
+			auth: &coreauth.Auth{
+				Attributes: map[string]string{
+					"api_key":            "token-2",
+					"chatgpt_account_id": "acc-2",
+				},
+			},
+			wantAPIKey:    "token-2",
+			wantAccountID: "acc-2",
+		},
+		{
+			name: "metadata access_token and account_id",
+			auth: &coreauth.Auth{
+				Metadata: map[string]any{
+					"access_token": "token-3",
+					"account_id":   "acc-3",
+				},
+			},
+			wantAPIKey:    "token-3",
+			wantAccountID: "acc-3",
+		},
+		{
+			name: "metadata api_key and chatgpt_account_id",
+			auth: &coreauth.Auth{
+				Metadata: map[string]any{
+					"api_key":            "token-4",
+					"chatgpt_account_id": "acc-4",
+				},
+			},
+			wantAPIKey:    "token-4",
+			wantAccountID: "acc-4",
+		},
+		{
+			name: "attributes precedence over metadata",
+			auth: &coreauth.Auth{
+				Attributes: map[string]string{
+					"access_token": "attr-token",
+					"account_id":   "attr-acc",
+				},
+				Metadata: map[string]any{
+					"access_token": "meta-token",
+					"account_id":   "meta-acc",
+				},
+			},
+			wantAPIKey:    "attr-token",
+			wantAccountID: "attr-acc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotKey, gotAcc := codexCreds(tt.auth)
+			if gotKey != tt.wantAPIKey {
+				t.Errorf("apiKey = %q, want %q", gotKey, tt.wantAPIKey)
+			}
+			if gotAcc != tt.wantAccountID {
+				t.Errorf("accountID = %q, want %q", gotAcc, tt.wantAccountID)
+			}
+		})
+	}
+}
+
+func TestCodexStrategyProxyConfig(t *testing.T) {
+	strat := NewCodexStrategy(nil, "http://127.0.0.1:11094")
+	if strat.httpClient == nil {
+		t.Fatal("expected non-nil httpClient")
+	}
+	tr, ok := strat.httpClient.Transport.(*http.Transport)
+	if !ok || tr == nil {
+		t.Fatal("expected http.Transport")
+	}
+	if tr.Proxy == nil {
+		t.Fatal("expected Proxy to be configured")
+	}
+}

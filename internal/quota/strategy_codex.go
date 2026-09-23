@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -19,9 +20,22 @@ type CodexStrategy struct {
 	baseURL    string
 }
 
-func NewCodexStrategy(client *http.Client) *CodexStrategy {
+func NewCodexStrategy(client *http.Client, defaultProxyURL ...string) *CodexStrategy {
 	if client == nil {
-		client = &http.Client{Timeout: 8 * time.Second}
+		transport := &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+		}
+		if len(defaultProxyURL) > 0 {
+			if proxyStr := strings.TrimSpace(defaultProxyURL[0]); proxyStr != "" {
+				if parsedURL, err := url.Parse(proxyStr); err == nil {
+					transport.Proxy = http.ProxyURL(parsedURL)
+				}
+			}
+		}
+		client = &http.Client{
+			Transport: transport,
+			Timeout:   8 * time.Second,
+		}
 	}
 	return &CodexStrategy{
 		httpClient: client,
@@ -97,20 +111,39 @@ func codexCreds(a *coreauth.Auth) (apiKey, accountID string) {
 	if a == nil {
 		return "", ""
 	}
+
+	// 1. 读取 apiKey / access_token:
 	if a.Attributes != nil {
-		apiKey = a.Attributes["api_key"]
-		accountID = a.Attributes["account_id"]
-	}
-	if apiKey == "" && a.Metadata != nil {
-		if v, ok := a.Metadata["access_token"].(string); ok {
+		if v, ok := a.Attributes["access_token"]; ok && strings.TrimSpace(v) != "" {
+			apiKey = v
+		} else if v, ok := a.Attributes["api_key"]; ok && strings.TrimSpace(v) != "" {
 			apiKey = v
 		}
 	}
-	if accountID == "" && a.Metadata != nil {
-		if v, ok := a.Metadata["account_id"].(string); ok {
+	if apiKey == "" && a.Metadata != nil {
+		if v, ok := a.Metadata["access_token"].(string); ok && strings.TrimSpace(v) != "" {
+			apiKey = v
+		} else if v, ok := a.Metadata["api_key"].(string); ok && strings.TrimSpace(v) != "" {
+			apiKey = v
+		}
+	}
+
+	// 2. 读取 account_id / chatgpt_account_id:
+	if a.Attributes != nil {
+		if v, ok := a.Attributes["account_id"]; ok && strings.TrimSpace(v) != "" {
+			accountID = v
+		} else if v, ok := a.Attributes["chatgpt_account_id"]; ok && strings.TrimSpace(v) != "" {
 			accountID = v
 		}
 	}
+	if accountID == "" && a.Metadata != nil {
+		if v, ok := a.Metadata["account_id"].(string); ok && strings.TrimSpace(v) != "" {
+			accountID = v
+		} else if v, ok := a.Metadata["chatgpt_account_id"].(string); ok && strings.TrimSpace(v) != "" {
+			accountID = v
+		}
+	}
+
 	return strings.TrimSpace(apiKey), strings.TrimSpace(accountID)
 }
 
