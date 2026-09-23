@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -71,10 +72,31 @@ func init() {
 	}
 }
 
+var (
+	configuredProxyURL   string
+	configuredProxyURLMu sync.RWMutex
+)
+
+// SetModelsUpdaterProxyURL sets the optional outbound proxy URL for models.json fetching.
+func SetModelsUpdaterProxyURL(proxyURL string) {
+	configuredProxyURLMu.Lock()
+	defer configuredProxyURLMu.Unlock()
+	configuredProxyURL = strings.TrimSpace(proxyURL)
+}
+
+func getModelsUpdaterProxyURL() string {
+	configuredProxyURLMu.RLock()
+	defer configuredProxyURLMu.RUnlock()
+	return configuredProxyURL
+}
+
 // StartModelsUpdater starts a background updater that fetches models
 // immediately on startup and then refreshes the model catalog every 3 hours.
 // Safe to call multiple times; only one updater will run.
-func StartModelsUpdater(ctx context.Context) {
+func StartModelsUpdater(ctx context.Context, proxyURL ...string) {
+	if len(proxyURL) > 0 && strings.TrimSpace(proxyURL[0]) != "" {
+		SetModelsUpdaterProxyURL(proxyURL[0])
+	}
 	updaterOnce.Do(func() {
 		go runModelsUpdater(ctx)
 	})
@@ -142,6 +164,11 @@ func tryRefreshModels(ctx context.Context, label string) {
 // along with the URL it was fetched from. Returns (nil, "") if all fetches fail.
 func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 	client := &http.Client{Timeout: modelsFetchTimeout}
+	if proxyURL := getModelsUpdaterProxyURL(); proxyURL != "" {
+		if transport, _, err := proxyutil.BuildHTTPTransport(proxyURL); err == nil && transport != nil {
+			client.Transport = transport
+		}
+	}
 	for _, url := range modelsURLs {
 		reqCtx, cancel := context.WithTimeout(ctx, modelsFetchTimeout)
 		req, err := http.NewRequestWithContext(reqCtx, "GET", url, nil)

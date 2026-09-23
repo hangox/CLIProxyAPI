@@ -751,7 +751,7 @@ func main() {
 			// Start the main proxy service
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			misc.StartAntigravityVersionUpdater(context.Background())
-			startModelCatalogUpdaters(localModel, cfg.Home.Enabled)
+			startModelCatalogUpdaters(localModel, cfg.Home.Enabled, cfg.ProxyURL)
 			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
 		}
 	}
@@ -767,13 +767,13 @@ func modelCatalogUpdaterPlan(localModel, homeEnabled bool) (startModels, startCo
 	return !homeEnabled, true
 }
 
-func startModelCatalogUpdaters(localModel, homeEnabled bool) {
+func startModelCatalogUpdaters(localModel, homeEnabled bool, proxyURL ...string) {
 	startModels, startCodexClient := modelCatalogUpdaterPlan(localModel, homeEnabled)
 	if startCodexClient {
 		registry.StartCodexClientModelsUpdater(context.Background())
 	}
 	if startModels {
-		registry.StartModelsUpdater(context.Background())
+		registry.StartModelsUpdater(context.Background(), proxyURL...)
 	} else if homeEnabled {
 		log.Info("Home mode: remote models.json updates disabled; Codex client model list follows Home model IDs")
 	}
